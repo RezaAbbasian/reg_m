@@ -1,0 +1,186 @@
+<?php
+/**
+ * @file
+ * Drupal needs this blank file.
+ */
+
+/**
+ * Implements hook_menu_alter().
+ */
+function reg_m_menu_alter(&$items) {
+  $items['user/password']['page arguments'] = array('reg_m_user_pass');
+}
+/**
+ * Implementation of hook_form_alter.
+ */
+function reg_m_form_user_register_form_alter(&$form, &$form_state) {
+   $form['account']['name']['#type'] = 'hidden';
+   $form['account']['name']['#access'] = FALSE;
+ $form['account']['name']['#value'] ='email_registration_' . user_password();
+ $form['#validate'][] = 'reg_user_register_validate';
+
+}
+function reg_user_register_validate($form, &$form_state){
+  global $user;
+  $new_nam = $form_state['values']['field_mobile_num']['und'][0]['local_number'];
+  $u = user_load_by_name($new_nam);
+  if($u){
+   form_set_error(t('این شماره موبایل قبلا در سایت ثبت شده است'));
+   drupal_set_message(t('این شماره موبایل قبلا در سایت ثبت شده است'),'error');
+  }
+}
+
+/**
+ * Implementation of hook_user_insert.
+ */
+
+function reg_m_user_insert(&$edit, $account, $category){
+  global $user;
+	$new_name = $account->field_mobile_num['und'][0]['mobile'];
+  $u = user_load_by_name($new_name);
+  if (!$u) {
+    db_update('users')
+    ->fields(array('name' => $new_name))
+    ->condition('uid', $account->uid)
+    ->execute();
+
+  $edit['name'] = $new_name;
+  $account->name = $new_name;
+  }
+  }
+
+function reg_m_mail_alter(&$message) {
+  if ($message['id'] == 'user_register_no_approval_required') {
+    $message['send'] = FALSE;
+  }
+}
+/**
+ * password Form builder.
+ */
+function reg_m_user_pass($form, &$form_state) {
+  $form = array(
+    '#prefix' => '<div id="reg-m-user-pass">',
+    '#suffix' => '</div>',
+  );
+  $form['name'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Phone number'),
+    '#required' => TRUE,
+    '#attributes' => array('placeholder' => t('Please input your phone number')),
+    '#default_value' => '',
+  );
+  $delay = variable_get('reg_m_sms_interval', 120);
+  $class = array('sms-send');
+  $disable = FALSE;
+  if (!empty($form_state['triggering_element']) && $form_state['triggering_element']['#name'] == 'send') {
+    $class[] = 'sms-sended';
+    $disable = TRUE;
+  }
+$form['verifi_send'] = array(
+    '#type' => 'button',
+    '#name' => 'send',
+    '#value' => t('Send verify code'),
+    '#executes_submit_callback' => FALSE,
+    '#limit_validation_errors' => array(array('name')),
+    '#attributes' => array('delay' => $delay, 'class' => $class),
+    '#prefix' => '<div id="reg-m-verifi-send">',
+    '#suffix' => '</div>',
+    '#ajax' => array(
+      'callback' => 'reg_m_user_pass_verifi_send_callback',
+    ),
+    '#attached' => array(
+      'js' => array(
+        drupal_get_path('module', 'reg_m') . '/js/reg_m.js',
+      ),
+    ),
+  );
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+  );
+    $form['verifi'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Verify code'),
+    '#required' => TRUE,
+    '#attributes' => array('placeholder' => t('Please input verify code')),
+    '#default_value' => '',
+  );
+  $form['pass'] = array(
+    '#type' => 'password_confirm',
+    '#required' => TRUE,
+  );
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => t('Submit'),
+  );
+  return $form;
+}
+
+/**
+ * Ajax call back.
+ */
+function reg_m_user_pass_verifi_send_callback($form, &$form_state) {
+  $commands[] = ajax_command_remove(".messages");
+  $commands[] = ajax_command_prepend("#reg-m-user-pass", theme('status_messages'));
+  $commands[] = ajax_command_replace("#reg-m-verifi-send", render($form['verifi_send']));
+  return array(
+    '#type' => 'ajax',
+    '#commands' => $commands,
+  );
+}
+
+/**
+ * Form validate.
+ */
+function reg_m_user_pass_validate($form, &$form_state) {
+  $number = $form_state['values']['name'];
+  $phone_regx = variable_get('reg_m_phone_regexp','(\+98|0)?9\d{9}');
+  if (!preg_match('/' . $phone_regx . '/', $number)) {
+    form_set_error('name', t('Phone number error.'));
+  }else{
+    $number = $form_state['values']['name'];
+    $u = user_load_by_name($number);
+    if (!$u) {
+      form_set_error('name', t('No matching account.'));
+    }
+  }
+  if ($form_state['triggering_element']['#name'] != 'send' && isset($form_state['storage']['verifi'])) {
+    if ($form_state['values']['verifi'] != $form_state['storage']['verifi']) {
+      form_set_error('verifi', t('Verify code incorrect.'));
+    }
+  }
+  elseif (empty(form_get_errors())) {
+    $verifi = rand(variable_get('reg_m_random_start', 1000), variable_get('reg_m_random_end', 9999));
+    $form_state['storage']['verifi'] = $verifi;
+    $message = array(
+      'random' => $verifi,
+      'message' => 'patterncode:121;activate-code:'.$verifi,
+    );
+    drupal_alter('reg_m_sms', $message);
+    sms_send($number, $message['message']);
+    drupal_set_message(t('Sms has send to your phone.'));
+    $form_state['rebuild'] = TRUE;
+  }
+}
+
+/**
+ * Form submit.
+ */
+function reg_m_user_pass_submit($form, &$form_state) {
+  global $user;
+  $number = $form_state['values']['name'];
+  $u = user_load_by_name($number);
+  if (!$u) {
+    drupal_set_message(t('No matching account.'));
+  }
+  else {
+    $edit = array(
+      'pass' => $form_state['values']['pass'],
+    );
+    $u = user_save($u, $edit);
+    drupal_set_message(t('Reset password success,please use your new password to login.'));
+    $form_state['redirect'] = 'user/login';
+  }
+}
